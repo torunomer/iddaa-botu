@@ -40,54 +40,82 @@ API_URL = "https://v3.football.api-sports.io"
 HEADERS = {'x-apisports-key': API_FOOTBALL_KEY}
 
 def turkce_karakter_temizle(metin):
-    metin = metin.strip()
+    metin = metin.strip().lower()
     harf_haritasi = {
-        'ç': 'c', 'Ç': 'C', 'ğ': 'g', 'Ğ': 'G',
-        'ı': 'i', 'I': 'I', 'İ': 'I', 'ö': 'o', 
-        'Ö': 'O', 'ş': 's', 'Ş': 'S', 'ü': 'u', 'Ü': 'U'
+        'ç': 'c', 'ğ': 'g', 'ı': 'i', 'İ': 'i',
+        'ö': 'o', 'ş': 's', 'ü': 'u'
     }
     for tr, eng in harf_haritasi.items():
         metin = metin.replace(tr, eng)
     return metin
 
-# --- ÇOKLU KAYNAKLI & HASSAS TAKIM BULUCU ---
+# Popüler / Sorunlu Takımlar İçin Manuel Arama Kısayolları Haritası
+TAKIM_KISAYOLLARI = {
+    "kayseri": "Kayseri",
+    "kayserispor": "Kayseri",
+    "kayseri spor": "Kayseri",
+    "galatasaray": "Galatasaray",
+    "fenerbahce": "Fenerbahce",
+    "besiktas": "Besiktas",
+    "trabzon": "Trabzonspor",
+    "trabzonspor": "Trabzonspor",
+    "torino": "Torino",
+    "milan": "Milan",
+    "inter": "Inter",
+    "juventus": "Juventus",
+    "real madrid": "Real Madrid",
+    "barcelona": "Barcelona"
+}
+
+# --- KADEMELİ VE YEDEKLİ TAKIM ARAMA MOTORU ---
 def takim_id_bul(takim_adi):
     temiz_ad = turkce_karakter_temizle(takim_adi)
-    bitisik_ad = temiz_ad.replace(" ", "")
+    
+    # 1. Aşama: Özel Sözlük / Kısayol Kontrolü
+    if temiz_ad in TAKIM_KISAYOLLARI:
+        sorgu_terim = TAKIM_KISAYOLLARI[temiz_ad]
+    else:
+        sorgu_terim = temiz_ad
 
-    # Arama havuzunu genişletiyoruz
-    sorgular = [takim_adi, temiz_ad, bitisik_ad]
-    kelimeler = temiz_ad.split()
-    if len(kelimeler) > 1:
-        sorgular.append(kelimeler[0]) # "Kayseri spor" -> "Kayseri"
+    # Arama Varyasyonları Havuzu
+    sorgu_listesi = [
+        sorgu_terim,
+        temiz_ad,
+        temiz_ad.replace("spor", "").strip(),
+        temiz_ad.replace(" ", "")
+    ]
+    
+    # Eğer "kayserispor" yazıldıysa "kayseri" kelimesini de sorguya ekle
+    if "spor" in temiz_ad:
+        sorgu_listesi.append(temiz_ad.replace("spor", ""))
 
     bulunan_takimlar = []
 
-    for sorgu in sorgular:
-        if len(sorgu) < 3:
+    for sorgu in sorgu_listesi:
+        if not sorgu or len(sorgu) < 3:
             continue
         try:
             url = f"{API_URL}/teams?search={sorgu}"
             res = requests.get(url, headers=HEADERS, timeout=10).json()
-            if res.get("response"):
+            if res.get("response") and len(res["response"]) > 0:
                 for item in res["response"]:
-                    t_info = item["team"]
-                    bulunan_takimlar.append(t_info)
+                    bulunan_takimlar.append(item["team"])
+                break # Sonuç bulunduysa döngüden çık
         except Exception as e:
-            logging.error(f"Takim arama hatasi ({sorgu}): {e}")
+            logging.error(f"Takım arama hatası ({sorgu}): {e}")
 
     if not bulunan_takimlar:
         return None, takim_adi
 
-    # Önceliklendirme Algoritması (Türkiye Ligleri ve Popüler Ligler Öncelikli)
+    # Türkiye ligindeki takımlara öncelik ver
     for t in bulunan_takimlar:
         if t.get("country") == "Turkey":
             return t["id"], t["name"]
 
-    # Eğer Türkiye takımı değilse listedeki ilk doğru eşleşmeyi al (Torino, Real Madrid vb.)
+    # Türkiye dışı takımlar için ilk eşleşmeyi döndür
     return bulunan_takimlar[0]["id"], bulunan_takimlar[0]["name"]
 
-# --- ÇOKLU KAYNAK VERİ TOPLAMA (H2H + SON FORM + SAKAT/CEZALI) ---
+# --- ÇOKLU KAYNAK VERİ TOPLAMA ---
 def coklu_analiz_verisi_topla(t1_id, t2_id):
     veri = {
         "h2h": [],
@@ -98,22 +126,22 @@ def coklu_analiz_verisi_topla(t1_id, t2_id):
     }
     
     try:
-        # 1. Kaynak: H2H Maç Geçmişi
+        # 1. H2H Maç Geçmişi
         h2h_url = f"{API_URL}/fixtures/headtohead?h2h={t1_id}-{t2_id}"
         h2h_res = requests.get(h2h_url, headers=HEADERS, timeout=10).json()
         veri["h2h"] = h2h_res.get("response", [])[:10]
 
-        # 2. Kaynak: Takım 1 Son 5 Maçlık Formu
+        # 2. Takım 1 Son Formu
         f1_url = f"{API_URL}/fixtures?team={t1_id}&last=5"
         f1_res = requests.get(f1_url, headers=HEADERS, timeout=10).json()
         veri["t1_form"] = f1_res.get("response", [])
 
-        # 3. Kaynak: Takım 2 Son 5 Maçlık Formu
+        # 3. Takım 2 Son Formu
         f2_url = f"{API_URL}/fixtures?team={t2_id}&last=5"
         f2_res = requests.get(f2_url, headers=HEADERS, timeout=10).json()
         veri["t2_form"] = f2_res.get("response", [])
 
-        # 4. Kaynak: Sakat ve Cezalı Raporları
+        # 4. Sakat / Cezalı Durumu
         inj1_url = f"{API_URL}/injuries?team={t1_id}"
         inj1_res = requests.get(inj1_url, headers=HEADERS, timeout=10).json()
         if inj1_res.get("response"):
@@ -135,7 +163,7 @@ def derin_h2h_analiz(takim1_input, takim2_input):
 
     if not t1_id or not t2_id:
         hata_takim = takim1_input if not t1_id else takim2_input
-        return f"⚠️ **Takım Bulunamadı:** '{hata_takim}' ismiyle eşleşen bir takım bulunamadı. Lütfen kontrol edin."
+        return f"⚠️ **Takım Bulunamadı:** '{hata_takim}' ismi veritabanında eşleşmedi. Lütfen ismi kontrol edin."
 
     analiz_veri = coklu_analiz_verisi_topla(t1_id, t2_id)
     maclar = analiz_veri["h2h"]
@@ -143,7 +171,6 @@ def derin_h2h_analiz(takim1_input, takim2_input):
     if not maclar:
         return f"ℹ️ **{t1_name}** ve **{t2_name}** arasında resmi geçmiş maç kaydı bulunamadı."
 
-    # H2H İstatistikleri
     total_matches = len(maclar)
     t1_wins, t2_wins, draws = 0, 0, 0
     total_goals = 0
@@ -172,7 +199,6 @@ def derin_h2h_analiz(takim1_input, takim2_input):
         if m_total > 2.5:
             over_25_count += 1
 
-    # Form İstatistikleri (Son 5 Maç)
     t1_form_score = sum([m["goals"]["home"] if m["teams"]["home"]["id"] == t1_id else m["goals"]["away"] for m in analiz_veri["t1_form"] if m.get("goals") and m["goals"].get("home") is not None])
     t2_form_score = sum([m["goals"]["home"] if m["teams"]["home"]["id"] == t2_id else m["goals"]["away"] for m in analiz_veri["t2_form"] if m.get("goals") and m["goals"].get("home") is not None])
 
@@ -180,7 +206,6 @@ def derin_h2h_analiz(takim1_input, takim2_input):
     kg_ratio = int((kg_var_count / total_matches) * 100)
     o25_ratio = int((over_25_count / total_matches) * 100)
 
-    # Çoklu Metrik Doğrulamalı Tahmin Motoru
     ms_guven = min(92, max(58, int((max(t1_wins, t2_wins) / total_matches) * 100) + 5))
     kg_guven = min(94, max(52, kg_ratio))
     gol_guven = min(95, max(52, o25_ratio))
@@ -189,7 +214,7 @@ def derin_h2h_analiz(takim1_input, takim2_input):
     t2_sakat = analiz_veri["t2_sakatlar"]
 
     if len(t1_sakat) > len(t2_sakat) and len(t1_sakat) >= 2:
-        ms_tahmin = f"{t2_name} Avantajlı ({t1_name}'de {len(t1_sakat)} Kritik Eksik)"
+        ms_tahmin = f"{t2_name} Avantajlı ({t1_name}'de {len(t1_sakat)} Eksik)"
     elif t1_wins > t2_wins or (t1_wins == t2_wins and t1_form_score >= t2_form_score):
         ms_tahmin = f"{t1_name} Çifte Şans (1X)"
     else:
@@ -305,7 +330,7 @@ async def otomatik_kupon_gonder(app: Application):
     except Exception as e:
         logging.error(f"Kanala mesaj atma hatası: {e}")
 
-# --- GELİŞMİŞ GİRDİ PARSER (Gelen Mesajları Okuma) ---
+# --- GELİŞMİŞ GİRDİ PARSER ---
 async def metin_dinleyici(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
@@ -332,11 +357,11 @@ async def metin_dinleyici(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 **Yapay Zeka Destekli Çoklu Analiz Botu Aktif!**\n\n"
-        "İstediğiniz takımları doğrudan yazabilirsiniz.\n"
+        "İstediğiniz takımları yazabilirsiniz.\n"
         "Örnekler:\n"
-        "• `kayseri spor - galatasaray`\n"
-        "• `torino vs milan`\n"
-        "• `fenerbahce besiktas`"
+        "• `kayserispor - galatasaray`\n"
+        "• `kayseri spor galatasaray`\n"
+        "• `torino vs milan`"
     )
 
 def main():
@@ -356,7 +381,7 @@ def main():
     )
     scheduler.start()
 
-    print("🤖 Çoklu Kaynak Destekli Analiz Botu Aktif!")
+    print("🤖 Gelişmiş Arama Motorlu Bot Aktif!")
     app.run_polling()
 
 if __name__ == "__main__":

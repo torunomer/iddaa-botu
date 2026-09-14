@@ -50,106 +50,33 @@ def turkce_karakter_temizle(metin):
         metin = metin.replace(tr, eng)
     return metin
 
-# --- GERÇEK MAÇLARDAN YAPAY ZEKA KUPONU OLUŞTURMA ---
-def gunun_gercek_kuponunu_hazirla():
-    try:
-        bugun = datetime.now().strftime("%Y-%m-%d")
-        url = f"{API_URL}/fixtures?date={bugun}"
-        res = requests.get(url, headers=HEADERS, timeout=10).json()
-        maclar = res.get("response", [])
-
-        if not maclar:
-            return "⚠️ Bugün için analiz edilebilecek aktif bülten maçı bulunamadı."
-
-        analizli_maclar = []
-
-        # Bültendeki maçları hızlıca analiz et
-        for m in maclar[:15]:  # İlk 15 popüler maçı tara
-            h_id = m["teams"]["home"]["id"]
-            a_id = m["teams"]["away"]["id"]
-            h_name = m["teams"]["home"]["name"]
-            a_name = m["teams"]["away"]["name"]
-
-            # Geçmiş H2H verisi çek
-            h2h_url = f"{API_URL}/fixtures/headtohead?h2h={h_id}-{a_id}"
-            h2h_res = requests.get(h2h_url, headers=HEADERS, timeout=10).json()
-            gecmis = h2h_res.get("response", [])[:5]
-
-            if gecmis:
-                toplam_gol = sum([(g["goals"]["home"] or 0) + (g["goals"]["away"] or 0) for g in gecmis])
-                kg_var_sayisi = sum([1 for g in gecmis if (g["goals"]["home"] or 0) > 0 and (g["goals"]["away"] or 0) > 0])
-                
-                avg_gol = toplam_gol / len(gecmis)
-                kg_oran = int((kg_var_sayisi / len(gecmis)) * 100)
-
-                # Tahmin ve Tutma Oranı Hesabı
-                if avg_gol >= 2.7:
-                    tahmin = "2.5 ÜST"
-                    tutma_orani = min(88, 65 + int(avg_gol * 7))
-                elif kg_oran >= 60:
-                    tahmin = "KG VAR"
-                    tutma_orani = min(92, kg_oran + 10)
-                else:
-                    tahmin = f"{h_name} Çifte Şans (1X)"
-                    tutma_orani = 78
-
-                analizli_maclar.append({
-                    "mac": f"{h_name} - {a_name}",
-                    "tahmin": tahmin,
-                    "orani": tutma_orani
-                })
-
-        if not analizli_maclar:
-            return None
-
-        # Tutma oranına göre en yüksek 2 maçı seçip kupon yap
-        analizli_maclar = sorted(analizli_maclar, key=lambda x: x["orani"], reverse=True)[:2]
-
-        toplam_guven = int(sum([m["orani"] for m in analizli_maclar]) / len(analizli_maclar))
-
-        kupon_metni = (
-            f"🔥 **GÜNÜN YAPAY ZEKA ANALİZ KUPONU** 🔥\n"
-            f"📅 **Tarih:** {bugun}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        )
-
-        for idx, item in enumerate(analizli_maclar, 1):
-            kupon_metni += (
-                f"⚽️ **{idx}. Maç:** {item['mac']}\n"
-                f"🎯 **Tahmin:** {item['tahmin']}\n"
-                f"📊 **Tutma İhtimali:** %{item['orani']}\n\n"
-            )
-
-        kupon_metni += (
-            f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"⚡️ **Genel Kupon Güven Oranı:** %{toplam_guven}\n"
-            f"🤖 *Bu kupon canlı maç ve H2H verileri analiz edilerek otomatik oluşturulmuştur.*"
-        )
-
-        return kupon_metni
-
-    except Exception as e:
-        logging.error(f"Gercek kupon olusturma hatasi: {e}")
-        return None
-
-async def otomatik_kupon_gonder(app: Application):
-    try:
-        kupon_metni = gunun_gercek_kuponunu_hazirla()
-        if kupon_metni:
-            await app.bot.send_message(chat_id=CHANNEL_ID, text=kupon_metni, parse_mode="Markdown")
-            logging.info("Gerçek verili analiz kuponu kanala atıldı.")
-    except Exception as e:
-        logging.error(f"Kanala mesaj atma hatası: {e}")
-
-# --- AKILLI TÜRKÇE TAKIM ARAMA ENGINE ---
+# --- GELİŞMİŞ VE ESNEK TAKIM ARAMA ALGORİTMASI ---
 def takim_id_bul(takim_adi):
-    arama_terimleri = [takim_adi, turkce_karakter_temizle(takim_adi)]
+    temiz_ad = turkce_karakter_temizle(takim_adi)
+    
+    # Denenecek varyasyonlar:
+    # 1. Girilen orijinal/temizlenmiş tam isim
+    # 2. İsmin sadece ilk kelimesi (Örn: "Fatih Karagümrük" yerine "Karagümrük" veya "Fatih")
+    sorgular = [takim_adi, temiz_ad]
+    kelimeler = temiz_ad.split()
+    if len(kelimeler) > 1:
+        sorgular.append(kelimeler[0])
+        sorgular.append(kelimeler[-1])
 
-    for sorgu in arama_terimleri:
+    for sorgu in sorgular:
+        if len(sorgu) < 3: # Çok kısa aramaları atla
+            continue
         try:
             url = f"{API_URL}/teams?search={sorgu}"
             res = requests.get(url, headers=HEADERS, timeout=10).json()
             if res.get("response") and len(res["response"]) > 0:
+                # Öncelik Türkiye Ligleri (Süper Lig / TFF 1)
+                for item in res["response"]:
+                    ulke = item.get("team", {}).get("country", "")
+                    if ulke == "Turkey":
+                        return item["team"]["id"], item["team"]["name"]
+                
+                # Türkiye dışı ise ilk bulduğu eşleşmeyi dön
                 return res["response"][0]["team"]["id"], res["response"][0]["team"]["name"]
         except Exception as e:
             logging.error(f"Takim arama hatasi ({sorgu}): {e}")
@@ -178,7 +105,7 @@ def derin_h2h_analiz(takim1_input, takim2_input):
 
     if not t1_id or not t2_id:
         hata_takim = takim1_input if not t1_id else takim2_input
-        return f"⚠️ **Takım Bulunamadı:** '{hata_takim}' veritabanında bulunamadı. Lütfen ismini kontrol edip tekrar deneyin."
+        return f"⚠️ **Takım Bulunamadı:** '{hata_takim}' veritabanında bulunamadı. Lütfen isminin ana kelimesini yazıp tekrar deneyin."
 
     try:
         h2h_url = f"{API_URL}/fixtures/headtohead?h2h={t1_id}-{t2_id}"
@@ -227,7 +154,6 @@ def derin_h2h_analiz(takim1_input, takim2_input):
         kg_ratio = int((kg_var_count / total_matches) * 100)
         o25_ratio = int((over_25_count / total_matches) * 100)
 
-        # Tutma Oranları Hesaplama
         ms_guven = min(90, max(55, int((max(t1_wins, t2_wins) / total_matches) * 100)))
         kg_guven = min(92, max(50, kg_ratio))
         gol_guven = min(94, max(50, o25_ratio))
@@ -269,12 +195,94 @@ def derin_h2h_analiz(takim1_input, takim2_input):
         logging.error(f"Analiz hatasi: {e}")
         return "⚠️ İstatistikler çekilirken bir sorun oluştu."
 
+# --- GERÇEK MAÇ KUPONU ---
+def gunun_gercek_kuponunu_hazirla():
+    try:
+        bugun = datetime.now().strftime("%Y-%m-%d")
+        url = f"{API_URL}/fixtures?date={bugun}"
+        res = requests.get(url, headers=HEADERS, timeout=10).json()
+        maclar = res.get("response", [])
+
+        if not maclar:
+            return None
+
+        analizli_maclar = []
+        for m in maclar[:15]:
+            h_id = m["teams"]["home"]["id"]
+            a_id = m["teams"]["away"]["id"]
+            h_name = m["teams"]["home"]["name"]
+            a_name = m["teams"]["away"]["name"]
+
+            h2h_url = f"{API_URL}/fixtures/headtohead?h2h={h_id}-{a_id}"
+            h2h_res = requests.get(h2h_url, headers=HEADERS, timeout=10).json()
+            gecmis = h2h_res.get("response", [])[:5]
+
+            if gecmis:
+                toplam_gol = sum([(g["goals"]["home"] or 0) + (g["goals"]["away"] or 0) for g in gecmis])
+                kg_var_sayisi = sum([1 for g in gecmis if (g["goals"]["home"] or 0) > 0 and (g["goals"]["away"] or 0) > 0])
+                avg_gol = toplam_gol / len(gecmis)
+                kg_oran = int((kg_var_sayisi / len(gecmis)) * 100)
+
+                if avg_gol >= 2.7:
+                    tahmin = "2.5 ÜST"
+                    tutma_orani = min(88, 65 + int(avg_gol * 7))
+                elif kg_oran >= 60:
+                    tahmin = "KG VAR"
+                    tutma_orani = min(92, kg_oran + 10)
+                else:
+                    tahmin = f"{h_name} Çifte Şans (1X)"
+                    tutma_orani = 78
+
+                analizli_maclar.append({
+                    "mac": f"{h_name} - {a_name}",
+                    "tahmin": tahmin,
+                    "orani": tutma_orani
+                })
+
+        if not analizli_maclar:
+            return None
+
+        analizli_maclar = sorted(analizli_maclar, key=lambda x: x["orani"], reverse=True)[:2]
+        toplam_guven = int(sum([m["orani"] for m in analizli_maclar]) / len(analizli_maclar))
+
+        kupon_metni = (
+            f"🔥 **GÜNÜN YAPAY ZEKA ANALİZ KUPONU** 🔥\n"
+            f"📅 **Tarih:** {bugun}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        )
+
+        for idx, item in enumerate(analizli_maclar, 1):
+            kupon_metni += (
+                f"⚽️ **{idx}. Maç:** {item['mac']}\n"
+                f"🎯 **Tahmin:** {item['tahmin']}\n"
+                f"📊 **Tutma İhtimali:** %{item['orani']}\n\n"
+            )
+
+        kupon_metni += (
+            f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"⚡️ **Genel Kupon Güven Oranı:** %{toplam_guven}\n"
+            f"🤖 *Bu kupon canlı maç ve H2H verileri analiz edilerek otomatik oluşturulmuştur.*"
+        )
+        return kupon_metni
+    except Exception as e:
+        logging.error(f"Gercek kupon olusturma hatasi: {e}")
+        return None
+
+async def otomatik_kupon_gonder(app: Application):
+    try:
+        kupon_metni = gunun_gercek_kuponunu_hazirla()
+        if kupon_metni:
+            await app.bot.send_message(chat_id=CHANNEL_ID, text=kupon_metni, parse_mode="Markdown")
+            logging.info("Gerçek verili analiz kuponu kanala atıldı.")
+    except Exception as e:
+        logging.error(f"Kanala mesaj atma hatası: {e}")
+
 # --- BOT DİNLENMESİ ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🤖 **Yapay Zeka Destekli Futbol Analiz Botu Aktif!**\n\n"
-        "Takım isimlerini yazarak anlık tutma oranlı analiz raporu alabilirsiniz.\n"
-        "Örnek: `Galatasaray Fenerbahçe`"
+        "Takım isimlerini girerek analiz alabilirsiniz.\n"
+        "Örnek: `Galatasaray Fenerbahçe` veya `Karagümrük Sivasspor`"
     )
 
 async def metin_dinleyici(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -304,7 +312,6 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, metin_dinleyici))
 
-    # Her 4 saatte bir o günün gerçek analiz kuponunu kanala paylaşır
     scheduler = AsyncIOScheduler()
     scheduler.add_job(
         otomatik_kupon_gonder, 
@@ -314,7 +321,7 @@ def main():
     )
     scheduler.start()
 
-    print("🤖 Gerçek Bülten ve Tutma Oranı Destekli Bot Aktif!")
+    print("🤖 Esnek Arama Destekli Bot Aktif!")
     app.run_polling()
 
 if __name__ == "__main__":

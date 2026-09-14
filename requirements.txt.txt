@@ -1,3 +1,3 @@
-python-telegram-bot
-apscheduler
-requests
+python-telegram-bot==21.1.1
+apscheduler==3.10.4
+requests==2.31.0

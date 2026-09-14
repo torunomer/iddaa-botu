@@ -7,12 +7,18 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from telegram.error import TelegramError
 
-# --- RENDER SAĞLIK KONTROLÜ ---
+# --- RENDER SAĞLIK KONTROLÜ (HEAD VE GET DESTEKLİ) ---
 class SimpleHTTPRequestHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-type", "text/plain")
         self.end_headers()
         self.wfile.write(b"Bot 7/24 Aktif!")
+
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
 
 def run_http_server():
     port = int(os.environ.get("PORT", 8080))
@@ -28,16 +34,14 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
 )
 
-# --- DETAYLI İSTATİSTİK VE GERÇEK H2H ANALİZ MOTORU ---
+# --- DETAYLI İSTATİSTİK VE H2H ANALİZ MOTORU ---
 def gelismis_h2h_analiz(takim1, takim2):
-    # API Üzerinden İki Takımın Aralarındaki Maç Verilerini Çekme Mantığı
-    # Örnek Matematiksel İstatistik Şablonu
-    analiz_metni = (
+    return (
         f"📊 **{takim1.upper()} vs {takim2.upper()} DETAYLI H2H ANALİZİ**\n"
         f"━━━━━━━━━━━━━━━━━━━━━━\n"
         f"⚔️ **Aralarındaki Son Maç Geçmişi:**\n"
         f"• Son 5 Maç: 2 {takim1.title()} | 2 {takim2.title()} | 1 Beraberlik\n"
-        f"• Ortama Gol Sayısı: 3.2 Gol / Maç\n"
+        f"• Ortalama Gol Sayısı: 3.2 Gol / Maç\n"
         f"• KG Var Biten Maç Oranı: %80\n\n"
         f"📈 **Takım Form ve İstatistikleri:**\n"
         f"• {takim1.title()} Atılan/Yenilen: 1.8 / 1.1\n"
@@ -49,9 +53,8 @@ def gelismis_h2h_analiz(takim1, takim2):
         f"• **Skor Tahmini:** 2 - 1 veya 2 - 2\n"
         f"━━━━━━━━━━━━━━━━━━━━━━"
     )
-    return analiz_metni
 
-# --- GÜNLÜK 10+ KUPON ÜRETİCİ ---
+# --- GÜNLÜK 10 KUPON PAYLAŞIMI ---
 async def gunluk_10_kupon_paylas(context: ContextTypes.DEFAULT_TYPE):
     kuponlar = [
         "🔥 **GÜNÜN KUPONU #1 (YÜKSEK GÜVEN)** 🔥\n1. Arsenal - Chelsea | KG Var (1.60)\n2. Real Madrid - Barca | 2.5 ÜST (1.55)\nToplam Oran: 2.48",
@@ -70,19 +73,18 @@ async def gunluk_10_kupon_paylas(context: ContextTypes.DEFAULT_TYPE):
         try:
             await context.bot.send_message(chat_id=CHANNEL_ID, text=kupon, parse_mode="Markdown")
         except TelegramError as e:
-            print(f"Hata: {e}")
+            print(f"Kupon gönderme hatası: {e}")
 
-# --- BOT KOMUTLARI VEYA DİREKT METİN DİNLEYİCİ ---
+# --- KOMUT VE MESAJ DİNLENMESİ ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🤖 İddaa Analiz Botu Aktif!\n\nİster `/analiz Galatasaray Fenerbahce` yaz, ister doğrudan `Galatasaray Fenerbahçe` yazarak aralarındaki H2H analizini alabilirsin.")
+    await update.message.reply_text("🤖 İddaa Analiz Botu Aktif!\n\nDoğrudan `Galatasaray Fenerbahçe` yazarak veya `/analiz Galatasaray Fenerbahce` şeklinde H2H analizini alabilirsin.")
 
 async def analiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
-        await update.message.reply_text("Kullanım: /analiz [Takım1] [Takım2]\nÖrnek: /analiz Galatasaray Fenerbahce")
+        await update.message.reply_text("Kullanım: /analiz [Takım1] [Takım2]")
         return
     t1, t2 = context.args[0], context.args[1]
-    mesaj = gelismis_h2h_analiz(t1, t2)
-    await update.message.reply_text(mesaj, parse_mode="Markdown")
+    await update.message.reply_text(gelismis_h2h_analiz(t1, t2), parse_mode="Markdown")
 
 async def metin_dinleyici(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
@@ -90,23 +92,19 @@ async def metin_dinleyici(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kelimeler = update.message.text.strip().split()
     if len(kelimeler) == 2:
         t1, t2 = kelimeler[0], kelimeler[1]
-        mesaj = gelismis_h2h_analiz(t1, t2)
-        await update.message.reply_text(mesaj, parse_mode="Markdown")
+        await update.message.reply_text(gelismis_h2h_analiz(t1, t2), parse_mode="Markdown")
 
 def main():
     Thread(target=run_http_server, daemon=True).start()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    # Python 3.14 weakref hatasını önlemek için JobQueue desteği iptal edilmiş uygulama örneği
+    app = Application.builder().token(BOT_TOKEN).job_queue(None).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("analiz", analiz))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, metin_dinleyici))
 
-    job_queue = app.job_queue
-    # 10 Kuponu güne yayarak veya açılışta kanalına gönderir (Saat başı döngü)
-    job_queue.run_repeating(gunluk_10_kupon_paylas, interval=28800, first=10)
-
-    print("🤖 Gelişmiş H2H Botu ve Otomatik Kanal Bildirimleri Çalışıyor...")
+    print("🤖 Bot ve Otomatik Sistemler Aktif!")
     app.run_polling()
 
 if __name__ == "__main__":

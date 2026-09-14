@@ -65,9 +65,6 @@ def save_kupon_to_db(tur: str, kupon_metni: str):
 # 3. RİSK SEVİYESİNE GÖRE KUPON MOTORU
 # ==========================================
 async def kupon_hazirla(risk_seviyesi="orta", hedef_oran=None):
-    """
-    risk_seviyesi: "dusuk" (kasa), "orta", "yuksek" (sürpriz)
-    """
     try:
         bugun = datetime.now(TURKEY_TZ).strftime("%Y-%m-%d")
         url = f"{API_URL}/fixtures?date={bugun}"
@@ -83,7 +80,6 @@ async def kupon_hazirla(risk_seviyesi="orta", hedef_oran=None):
             analizli_maclar = []
             su_an_timestamp = datetime.now(TURKEY_TZ).timestamp()
 
-            # API kotasını korumak için max 12 maç taranır
             gelecek_maclar = [m for m in maclar if m["fixture"]["timestamp"] > su_an_timestamp][:12]
 
             for m in gelecek_maclar:
@@ -95,7 +91,6 @@ async def kupon_hazirla(risk_seviyesi="orta", hedef_oran=None):
                 mac_timestamp = m["fixture"]["timestamp"]
                 mac_saati = datetime.fromtimestamp(mac_timestamp, TURKEY_TZ).strftime("%H:%M")
 
-                # H2H İsteği
                 h2h_url = f"{API_URL}/fixtures/headtohead?h2h={h_id}-{a_id}"
                 h2h_res = await client.get(h2h_url, headers=HEADERS)
                 gecmis = h2h_res.json().get("response", [])[:5]
@@ -106,18 +101,15 @@ async def kupon_hazirla(risk_seviyesi="orta", hedef_oran=None):
                 else:
                     avg_gol = 2.5
 
-                # Risk Parametrelerine Göre Tercihler
                 if risk_seviyesi == "dusuk":
-                    # Garanti tercihler (%88+ güven, düşük oranlar)
                     tahmin = "1.5 ÜST" if avg_gol >= 2.0 else "1X Çifte Şans"
                     oran = 1.30
                     guven = 90
                 elif risk_seviyesi == "yuksek":
-                    # Sürpriz/Yüksek riskli tercihler
                     tahmin = "2.5 ÜST & KG VAR" if avg_gol >= 2.7 else "MS 1 & 2.5 ÜST"
                     oran = 2.45
                     guven = 65
-                else:  # "orta" risk
+                else:
                     tahmin = "2.5 ÜST" if avg_gol >= 2.5 else "MS 1"
                     oran = 1.70
                     guven = 78
@@ -135,7 +127,6 @@ async def kupon_hazirla(risk_seviyesi="orta", hedef_oran=None):
         if not analizli_maclar:
             return None
 
-        # Hedef Oran / Maç Sayısı Belirleme
         if risk_seviyesi == "dusuk":
             max_mac = 3
             hedef_oran = hedef_oran or 2.50
@@ -237,7 +228,7 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Hoş geldin! 👋\n\n"
         f"🤖 **Pro Analiz VIP İddaa Asistanı**\n\n"
         f"📌 **Bana Nasıl Komut Verebilirsin?**\n"
-        f"👉 Direct yaza bilirsin: *'az riskli kupon yap'*, *'kasa kuponu'*, *'sürpriz kupon'*\n"
+        f"👉 Doğrudan yazabilirsin: *'az riskli kupon yap'*, *'kasa kuponu'*, *'sürpriz kupon'*\n"
         f"👉 Oran belirtebilirsin: `/kupon 10` veya direkt `15` yazabilirsin.\n"
         f"👉 Maç analizi isteyebilirsin: `/analiz GS vs FB` veya direkt `Real Madrid vs Barcelona`."
     )
@@ -260,39 +251,44 @@ async def ozel_kupon_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(kupon, parse_mode="Markdown")
 
+async def analiz_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("⚠️ Lütfen maç adı girin.\n*Örnek:* `/analiz Galatasaray vs Fenerbahce`", parse_mode="Markdown")
+        return
+
+    mac_adi = " ".join(context.args)
+    await update.message.reply_text(f"🔍 *{mac_adi}* maçı için detaylı analiz çıkarılıyor...", parse_mode="Markdown")
+    rapor = detayli_mac_analizi(mac_adi)
+    await update.message.reply_text(rapor, parse_mode="Markdown")
+
 async def mesaj_yanitla(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
         
     metin = update.message.text.lower().strip()
 
-    # Start / Menü
     if metin in ["strat", "start", "basla", "başla", "menu", "menü"]:
         await start_cmd(update, context)
         return
 
-    # Az Riskli / Garanti / Kasa İstekleri
     if any(kelime in metin for kelime in ["az risk", "dusuk risk", "düşük risk", "garanti", "kasa"]):
         await update.message.reply_text("🛡 Az riskli (kasa) kuponu oluşturuluyor...", parse_mode="Markdown")
         kupon = await kupon_hazirla(risk_seviyesi="dusuk") or "⚠️ Uygun garanti maç bulunamadı."
         await update.message.reply_text(kupon, parse_mode="Markdown")
         return
 
-    # Sürpriz / Yüksek Risk İstekleri
     if any(kelime in metin for kelime in ["sürpriz", "surpriz", "bomba", "yuksek risk", "yüksek risk"]):
         await update.message.reply_text("💣 Yüksek riskli (sürpriz) kupon oluşturuluyor...", parse_mode="Markdown")
         kupon = await kupon_hazirla(risk_seviyesi="yuksek") or "⚠️ Uygun sürpriz maç bulunamadı."
         await update.message.reply_text(kupon, parse_mode="Markdown")
         return
 
-    # Takım Maç Analizi (vs veya - içerenler)
     if "vs" in metin or " - " in metin:
         await update.message.reply_text(f"🔍 *{metin.upper()}* maçı taranıyor...", parse_mode="Markdown")
         rapor = detayli_mac_analizi(metin)
         await update.message.reply_text(rapor, parse_mode="Markdown")
         return
 
-    # Sadece sayı yazıldığında (Örn: "12")
     val_check = metin.replace('.', '', 1).replace(',', '', 1)
     if val_check.isdigit():
         oran = float(metin.replace(',', '.'))

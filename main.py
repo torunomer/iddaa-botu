@@ -22,7 +22,7 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "SENIN_TELEGRAM_BOT_TOKENIN")
+BOT_TOKEN = "8637743696:AAG2S2JUlIjTUL-1vURcuUehclenxQD57Nw"
 API_KEY = os.getenv("FOOTBALL_API_KEY", "SENIN_FOOTBALL_API_KEYIN")
 CHANNEL_ID = os.getenv("CHANNEL_USERNAME", "@seninkanaladi")
 
